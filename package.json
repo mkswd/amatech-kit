@@ -6,9 +6,9 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./components/*": "./src/components/*",
-    "./supabase/*": "./src/supabase/*",
-    "./testing/*": "./src/testing/*"
+    "./components/*": "./src/components/*.tsx",
+    "./supabase/*": "./src/supabase/*.ts",
+    "./testing/*": "./src/testing/*.ts"
   },
   "peerDependencies": {
     "@supabase/supabase-js": ">=2",
