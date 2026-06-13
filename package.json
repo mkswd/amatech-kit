@@ -6,9 +6,13 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./zugferd": "./src/zugferd.ts",
     "./components/*": "./src/components/*.tsx",
     "./supabase/*": "./src/supabase/*.ts",
     "./testing/*": "./src/testing/*.ts"
+  },
+  "dependencies": {
+    "pdf-lib": "^1.17.1"
   },
   "peerDependencies": {
     "@supabase/supabase-js": ">=2",
