@@ -6,3 +6,4 @@ export * from './fx';
 export * from './countries';
 export * from './csv';
 export * from './yield';
+export * from './einvoice';
