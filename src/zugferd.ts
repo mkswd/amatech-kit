@@ -213,3 +213,65 @@ export async function buildZugferdPdf(input: ZugferdInput): Promise<Uint8Array> 
 
   return doc.save({ useObjectStreams: false });
 }
+
+export type AngebotPdfInput = {
+  number: string;
+  issueDateStr: string;
+  validUntilStr?: string | null;
+  title?: string | null;
+  seller: ZugferdParty;
+  buyer: ZugferdParty;
+  lines: ZugferdLine[];
+  netCents: number;
+  taxCents: number;
+  totalCents: number;
+  kleinunternehmer: boolean;
+};
+
+// Plain (non-ZUGFeRD) Angebot PDF for emailing/printing a quote. Embedded font,
+// no e-invoice payload — a quote isn't a Rechnung.
+export async function buildAngebotPdf(input: AngebotPdfInput): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  doc.registerFontkit(fontkit);
+  doc.setTitle(`Angebot ${input.number}`);
+  doc.setCreator('Feierabend');
+  const font = await doc.embedFont(b64ToBytes(CARLITO_REGULAR_B64), { subset: true });
+  const page = doc.addPage([595.28, 841.89]);
+  const { width, height } = page.getSize();
+  const left = 56, right = width - 56;
+  let y = height - 64;
+  const grey = rgb(0.42, 0.45, 0.5), dark = rgb(0.1, 0.12, 0.16);
+  const text = (s: string, x: number, yy: number, size = 9, color = dark) => page.drawText(s ?? '', { x, y: yy, size, font, color });
+  const rightText = (s: string, xR: number, yy: number, size = 9, color = dark) => page.drawText(s ?? '', { x: xR - font.widthOfTextAtSize(s ?? '', size), y: yy, size, font, color });
+
+  rightText(input.seller.name, right, y, 13, dark); y -= 14;
+  for (const l of (input.seller.address || '').split(/\n/).filter(Boolean)) { rightText(l, right, y, 8, grey); y -= 10; }
+
+  y = height - 150;
+  text('Angebot für', left, y, 8, grey); y -= 13;
+  text(input.buyer.name || '—', left, y, 11, dark); y -= 26;
+  text(`Angebotsnr.: ${input.number}`, left, y, 9); rightText(`Datum: ${input.issueDateStr}`, right, y, 9); y -= 12;
+  if (input.validUntilStr) { rightText(`Gültig bis: ${input.validUntilStr}`, right, y, 9); y -= 12; }
+  y -= 8;
+  text(`Angebot: ${input.title || 'Leistung'}`, left, y, 13, dark); y -= 22;
+
+  const colQty = 330, colUnit = 415, colTot = right;
+  text('Beschreibung', left, y, 8, grey); rightText('Menge', colQty, y, 8, grey); rightText('Einzelpreis', colUnit, y, 8, grey); rightText('Gesamt', colTot, y, 8, grey);
+  y -= 6; page.drawLine({ start: { x: left, y }, end: { x: right, y }, thickness: 0.5, color: grey }); y -= 14;
+  for (const l of input.lines) {
+    const desc = l.description.length > 60 ? l.description.slice(0, 58) + '…' : l.description;
+    text(desc, left, y, 9); rightText(`${l.quantity} ${l.unit}`, colQty, y, 9); rightText(eur(l.unitPriceCents), colUnit, y, 9); rightText(eur(l.lineTotalCents), colTot, y, 9);
+    y -= 14; if (y < 120) { y = height - 64; doc.addPage(); }
+  }
+  y -= 6; page.drawLine({ start: { x: 360, y }, end: { x: right, y }, thickness: 0.5, color: grey }); y -= 14;
+  text('Netto', 360, y, 9, grey); rightText(eur(input.netCents), right, y, 9); y -= 12;
+  if (!input.kleinunternehmer) { text('zzgl. 19 % USt.', 360, y, 9, grey); rightText(eur(input.taxCents), right, y, 9); y -= 12; }
+  text('Angebotssumme', 360, y, 11, dark); rightText(eur(input.totalCents), right, y, 11, dark); y -= 20;
+  if (input.kleinunternehmer) { text('Gemäß § 19 UStG wird keine Umsatzsteuer berechnet.', left, y, 8, grey); y -= 14; }
+  text('Wir freuen uns auf Ihren Auftrag.', left, y, 9, grey);
+
+  const footer = [input.seller.name, input.seller.taxNumber && `Steuernr.: ${input.seller.taxNumber}`, input.seller.vatId && `USt-IdNr.: ${input.seller.vatId}`, input.seller.iban && `IBAN: ${input.seller.iban}`].filter(Boolean).join('  ·  ');
+  text(footer, left, 48, 7, grey);
+
+  return doc.save();
+}
