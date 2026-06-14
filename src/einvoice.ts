@@ -40,6 +40,7 @@ export type EInvoiceInput = {
   kleinunternehmer: boolean; // §19 UStG → VAT category E, rate 0
   vatRate?: number; // standard rate when not Kleinunternehmer (default 19)
   note?: string | null;
+  buyerReference?: string | null; // BT-10 Leitweg-ID (required for B2G XRechnung)
 };
 
 const esc = (s: string) =>
@@ -179,4 +180,78 @@ ${dueXml ? dueXml + '\n' : ''}      <ram:SpecifiedTradeSettlementHeaderMonetaryS
     </ram:ApplicableHeaderTradeSettlement>
   </rsm:SupplyChainTradeTransaction>
 </rsm:CrossIndustryInvoice>`;
+}
+
+// EN 16931 invoice in UBL syntax with the XRechnung 3.0 customization. UBL is the
+// other EN 16931 syntax (alongside CII); German B2G (public-sector) buyers expect
+// XRechnung, which also requires a BuyerReference (BT-10, the Leitweg-ID).
+export function buildUblXml(inv: EInvoiceInput): string {
+  const currency = inv.currency || 'EUR';
+  const rate = inv.kleinunternehmer ? 0 : inv.vatRate ?? 19;
+  const catCode = inv.kleinunternehmer ? 'E' : 'S';
+  const exemptionReason = inv.kleinunternehmer ? 'Kleinunternehmer gemäß § 19 UStG, keine Umsatzsteuer' : null;
+  const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+  const taxScheme = '<cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme>';
+  const taxCategory =
+    `<cac:ClassifiedTaxCategory><cbc:ID>${catCode}</cbc:ID><cbc:Percent>${rate}</cbc:Percent>${taxScheme}</cac:ClassifiedTaxCategory>`;
+
+  const partyXml = (tag: string, p: EInvoiceParty): string => {
+    const country = (p.countryCode || 'DE').toUpperCase();
+    const addr: string[] = ['      <cac:PostalAddress>'];
+    if (p.street) addr.push(`        <cbc:StreetName>${esc(p.street)}</cbc:StreetName>`);
+    if (p.city) addr.push(`        <cbc:CityName>${esc(p.city)}</cbc:CityName>`);
+    if (p.postcode) addr.push(`        <cbc:PostalZone>${esc(p.postcode)}</cbc:PostalZone>`);
+    addr.push(`        <cac:Country><cbc:IdentificationCode>${esc(country)}</cbc:IdentificationCode></cac:Country>`);
+    addr.push('      </cac:PostalAddress>');
+    const taxReg = p.vatId
+      ? `\n      <cac:PartyTaxScheme><cbc:CompanyID>${esc(p.vatId)}</cbc:CompanyID>${taxScheme}</cac:PartyTaxScheme>`
+      : '';
+    const contact = p.email ? `\n      <cac:Contact><cbc:ElectronicMail>${esc(p.email)}</cbc:ElectronicMail></cac:Contact>` : '';
+    return `  <cac:${tag}>
+    <cac:Party>
+${addr.join('\n')}${taxReg}
+      <cac:PartyLegalEntity><cbc:RegistrationName>${esc(p.name)}</cbc:RegistrationName></cac:PartyLegalEntity>${contact}
+    </cac:Party>
+  </cac:${tag}>`;
+  };
+
+  const lineXml = inv.lines
+    .map((l, i) => `  <cac:InvoiceLine>
+    <cbc:ID>${esc(String(l.id ?? i + 1))}</cbc:ID>
+    <cbc:InvoicedQuantity unitCode="${uneceUnit(l.unit)}">${l.quantity}</cbc:InvoicedQuantity>
+    <cbc:LineExtensionAmount currencyID="${currency}">${amt(l.lineTotalCents)}</cbc:LineExtensionAmount>
+    <cac:Item><cbc:Name>${esc(l.name)}</cbc:Name>${taxCategory}</cac:Item>
+    <cac:Price><cbc:PriceAmount currencyID="${currency}">${amt(l.unitPriceCents)}</cbc:PriceAmount></cac:Price>
+  </cac:InvoiceLine>`)
+    .join('\n');
+
+  const taxCatHeader = `<cac:TaxCategory><cbc:ID>${catCode}</cbc:ID><cbc:Percent>${rate}</cbc:Percent>${exemptionReason ? `<cbc:TaxExemptionReason>${esc(exemptionReason)}</cbc:TaxExemptionReason>` : ''}${taxScheme}</cac:TaxCategory>`;
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2" xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">
+  <cbc:CustomizationID>urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0</cbc:CustomizationID>
+  <cbc:ProfileID>urn:fdc:peppol.eu:2017:poacc:billing:01:1.0</cbc:ProfileID>
+  <cbc:ID>${esc(inv.number)}</cbc:ID>
+  <cbc:IssueDate>${iso(inv.issueDate)}</cbc:IssueDate>${inv.dueDate ? `\n  <cbc:DueDate>${iso(inv.dueDate)}</cbc:DueDate>` : ''}
+  <cbc:InvoiceTypeCode>380</cbc:InvoiceTypeCode>${inv.note ? `\n  <cbc:Note>${esc(inv.note)}</cbc:Note>` : ''}
+  <cbc:DocumentCurrencyCode>${currency}</cbc:DocumentCurrencyCode>${inv.buyerReference ? `\n  <cbc:BuyerReference>${esc(inv.buyerReference)}</cbc:BuyerReference>` : ''}
+${partyXml('AccountingSupplierParty', inv.seller)}
+${partyXml('AccountingCustomerParty', inv.buyer)}
+  <cac:TaxTotal>
+    <cbc:TaxAmount currencyID="${currency}">${amt(inv.taxCents)}</cbc:TaxAmount>
+    <cac:TaxSubtotal>
+      <cbc:TaxableAmount currencyID="${currency}">${amt(inv.netCents)}</cbc:TaxableAmount>
+      <cbc:TaxAmount currencyID="${currency}">${amt(inv.taxCents)}</cbc:TaxAmount>
+      ${taxCatHeader}
+    </cac:TaxSubtotal>
+  </cac:TaxTotal>
+  <cac:LegalMonetaryTotal>
+    <cbc:LineExtensionAmount currencyID="${currency}">${amt(inv.netCents)}</cbc:LineExtensionAmount>
+    <cbc:TaxExclusiveAmount currencyID="${currency}">${amt(inv.netCents)}</cbc:TaxExclusiveAmount>
+    <cbc:TaxInclusiveAmount currencyID="${currency}">${amt(inv.grandTotalCents)}</cbc:TaxInclusiveAmount>
+    <cbc:PayableAmount currencyID="${currency}">${amt(inv.grandTotalCents)}</cbc:PayableAmount>
+  </cac:LegalMonetaryTotal>
+${lineXml}
+</Invoice>`;
 }
